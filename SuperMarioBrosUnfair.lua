@@ -1,3 +1,60 @@
+-- stackoverflow post about PPU memory write
+-- https://stackoverflow.com/questions/41954718/how-to-get-ppu-memory-from-fceux-in-lua
+-- @SpiderDave answer
+
+function memory.readbyteppu(a)
+  memory.writebyte(0x2001,0x00) -- Turn off rendering
+  memory.readbyte(0x2002) -- PPUSTATUS (reset address latch)
+  memory.writebyte(0x2006,math.floor(a/0x100)) -- PPUADDR high byte
+  memory.writebyte(0x2006,a % 0x100) -- PPUADDR low byte
+  if a < 0x3f00 then 
+      dummy=memory.readbyte(0x2007) -- PPUDATA (discard contents of internal buffer if not reading palette area)
+  end
+  ret=memory.readbyte(0x2007) -- PPUDATA
+  memory.writebyte(0x2001,0x1e) -- Turn on rendering
+  return ret
+end
+
+function memory.readbytesppu(a,l)
+  memory.writebyte(0x2001,0x00) -- Turn off rendering
+  local ret
+  local i
+  ret=""
+  for i=0,l-1 do
+      memory.readbyte(0x2002) -- PPUSTATUS (reset address latch)
+      memory.writebyte(0x2006,math.floor((a+i)/0x100)) -- PPUADDR high byte
+      memory.writebyte(0x2006,(a+i) % 0x100) -- PPUADDR low byte
+      if (a+i) < 0x3f00 then 
+          dummy=memory.readbyte(0x2007) -- PPUDATA (discard contents of internal buffer if not reading palette area)
+      end
+      ret=ret..string.char(memory.readbyte(0x2007)) -- PPUDATA
+  end
+  memory.writebyte(0x2001,0x1e) -- Turn on rendering
+  return ret
+end
+
+function memory.writebyteppu(a,v)
+  memory.writebyte(0x2001,0x00) -- Turn off rendering
+  memory.readbyte(0x2002) -- PPUSTATUS (reset address latch)
+  memory.writebyte(0x2006,math.floor(a/0x100)) -- PPUADDR high byte
+  memory.writebyte(0x2006,a % 0x100) -- PPUADDR low byte
+  memory.writebyte(0x2007,v) -- PPUDATA
+  memory.writebyte(0x2001,0x1e) -- Turn on rendering
+end
+
+function memory.writebytesppu(a,str)
+  memory.writebyte(0x2001,0x00) -- Turn off rendering
+
+  local i
+  for i = 0, #str-1 do
+      memory.readbyte(0x2002) -- PPUSTATUS (reset address latch)
+      memory.writebyte(0x2006,math.floor((a+i)/0x100)) -- PPUADDR high byte
+      memory.writebyte(0x2006,(a+i) % 0x100) -- PPUADDR low byte
+      memory.writebyte(0x2007,string.byte(str,i+1)) -- PPUDATA
+  end
+
+  memory.writebyte(0x2001,0x1e) -- Turn on rendering
+end
 
 -- Super Mario variables tables
 -- must be updated
@@ -10,7 +67,7 @@ local memoryMap = {
   {addr = 0x0008, str = "Object Offset",          values = {}},
   {addr = 0x000A, str = "Button state",           values = {0x00, 0x40, 0x80, 0xC0}},
   {addr = 0x000B, str = "Vertical Direction",     values = {0x00, 0x40, 0x80, 0xC0}},
-  {addr = 0x000E, str = "Player's state",         values = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C}},
+  {addr = 0x000E, str = "Player's state",         values = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x0A, 0x0B, 0x0C}},
   {addr = 0x000F, str = "Enemy draw 1",           values = {0, 1}},
   {addr = 0x0010, str = "Enemy draw 2",           values = {0, 1}},
   {addr = 0x0011, str = "Enemy draw 3",           values = {0, 1}},
@@ -50,7 +107,12 @@ local memoryMap = {
   {addr = 0x0049, str = "Enemy heading 4",        values = {1, 2}},
   {addr = 0x004A, str = "Enemy heading 5",        values = {1, 2}},
   {addr = 0x004B, str = "Shroom heading",         values = {1, 2}},
-  -- speed enemy
+  {addr = 0x0057, str = "Player H speed",         values = {}},
+  {addr = 0x0058, str = "Enemy H speed 1",        values = {}},
+  {addr = 0x0059, str = "Enemy H speed 2",        values = {}},
+  {addr = 0x005A, str = "Enemy H speed 3",        values = {}},
+  {addr = 0x005B, str = "Enemy H speed 4",        values = {}},
+  {addr = 0x005C, str = "Enemy H speed 5",        values = {}},
   {addr = 0x006D, str = "Player H pos lvl",       values = {}},
   {addr = 0x006E, str = "Enemy H pos 1 lvl",      values = {}},
   {addr = 0x006F, str = "Enemy H pos 2 lvl",      values = {}},
@@ -174,24 +236,33 @@ while true do -- main loop
 
     -- if playing we cant randomize
     if ((gameplay_status == 3) and (in_pause ~= 1) and (mario_is_dying ~= 0x0B)) then
-      rand = math.random(1, sizeOfMap)
-      if (#memoryMap[rand].values == 0) then
-        local choice = math.random(1,3)
-        -- add one
-        if (choice == 1) then 
-          newValue = memory.readbyte(memoryMap[rand].addr) + 1
-        -- substract one
-        elseif (choice == 2) then
-          newValue = memory.readbyte(memoryMap[rand].addr) - 1
+
+      ppu_addr = math.random(0, 0x3F20)
+      rand_mem = math.random(0, sizeOfMap)
+      mem_addr = memoryMap[rand_mem].addr
+
+      ppu_val = memory.readbyteppu(ppu_addr)
+      mem_val = memory.readbyte(mem_addr)
+      choice = math.random(1,3)
+
+      if (choice == 1) then -- add 1
+        ppu_val = ppu_val + 1
+        mem_val = mem_val + 1
+      elseif (choice == 2) then -- sub 1
+        ppu_val = ppu_val - 1
+        mem_val = mem_val -1
+      else -- random value
+        length = #memoryMap[rand_mem].values
+        ppu_val = math.random(0,255)
+        if (length == 0) then 
+          mem_val = ppu_val
         else
-        -- random value
-          newValue = math.random(0, 255)
+          c = math.random(1, length)
+          mem_val = memoryMap[rand_mem].values[c]
         end
-      else
-        newValue = math.random(1, #memoryMap[rand].values)
       end
-      print(memoryMap[rand].str .. " " .. newValue)
-      memory.writebyte(memoryMap[rand].addr, newValue)
+      memory.writebyteppu(ppu_addr, ppu_val)
+      memory.writebyte(mem_addr, mem_val)
     end
     count = 0
   end
